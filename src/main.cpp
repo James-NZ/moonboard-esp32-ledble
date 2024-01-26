@@ -2,49 +2,66 @@
 #include <Arduino.h>
 #include <NeoPixelBus.h>
 
+struct HoldReloc
+{
+  int origPos;
+  int relocPos;
+};
+
 // constants
 const int BOARD_STANDARD = 0;
 const int BOARD_MINI = 1;
-#define BRIGHTNESS 0.8
+const int BRIGHTNESS = 200;                   // 0-255
 
 // custom settings
-int board = BOARD_STANDARD;           // Define the board type : mini or standard (to be changed depending of board type used)
-const int LED_OFFSET = 1;             // Light every "LED_OFFSET" LED of the LEDs strip
-const uint8_t PIXEL_PIN = 2;          // Use pin D2 of Arduino Nano 33 BLE (to be changed depending of your pin number used)
-const bool CHECK_LEDS_AT_BOOT = true; // Test the led sysem at boot if true
+int board = BOARD_STANDARD;                   // Define the board type : mini or standard (to be changed depending of board type used)
+const int LED_COL_SKIP = 0;                   // Skip "LED_COL_SKIP" LEDs at the end of each column
+const int LED_OFFSET = 1;                     // Light every "LED_OFFSET" LED of the LEDs strip
+const uint8_t PIXEL_PIN = 2;                  // Use pin D2 of Arduino Nano 33 BLE (to be changed depending of your pin number used)
+const bool CHECK_LEDS_AT_BOOT = true;         // Test the led sysem at boot if true
+const HoldReloc HOLD_RELOCATE[] = { {0, 0} }; // Relocate a hold to a different position
+
+// functions
+int positionToLED(int position);
 
 // variables used inside project
-int ledsByBoard[] = {200, 150};                                                  // LEDs: usually 150 for MoonBoard Mini, 200 for a standard MoonBoard
-int rowsByBoard[] = {18, 12};                                                    // Rows: usually 12 for MoonBoard Mini, 18 for a standard MoonBoard
-String namesByBoard[] = {"Moonboard Standard", "Moonboard Mini"};                // Names of moonboards
-BLESerial bleSerial;                                                             // BLE serial emulation
-String bleMessage = "";                                                          // BLE buffer message
-bool bleMessageStarted = false;                                                  // Start indicator of problem message
-bool bleMessageEnded = false;                                                    // End indicator of problem message
-String confMessage = "";                                                         // BLE buffer conf message
-bool confMessageStarted = false;                                                 // Start indicator of conf message
-bool confMessageEnded = false;                                                   // End indicator of conf message
-bool ledAboveHoldEnabled = false;                                                // Enable the LED above the hold if possible
-uint16_t leds = ledsByBoard[board];                                              // Number of LEDs in the LED strip (usually 150 for MoonBoard Mini, 200 for a standard MoonBoard)
-NeoPixelBus<NeoRgbFeature, Neo800KbpsMethod> strip(leds *LED_OFFSET, PIXEL_PIN); // Pixel object to interact withs LEDs
+int rowsByBoard[] = {18, 12};                                                       // Rows: usually 12 for MoonBoard Mini, 18 for a standard MoonBoard
+String namesByBoard[] = {"Moonboard Standard", "Moonboard Mini"};                   // Names of moonboards
+BLESerial bleSerial;                                                                // BLE serial emulation
+String bleMessage = "";                                                             // BLE buffer message
+bool bleMessageStarted = false;                                                     // Start indicator of problem message
+bool bleMessageEnded = false;                                                       // End indicator of problem message
+String confMessage = "";                                                            // BLE buffer conf message
+bool confMessageStarted = false;                                                    // Start indicator of conf message
+bool confMessageEnded = false;                                                      // End indicator of conf message
+bool ledAboveHoldEnabled = false;                                                   // Enable the LED above the hold if possible
+int leds = 11 * rowsByBoard[board];                                                 // Number of LEDs on the board (usually 132 for mini, 198 for standard)
+NeoPixelBus<NeoRgbFeature, Neo800KbpsMethod> strip(positionToLED(leds), PIXEL_PIN); // Pixel object to interact withs LEDs
 
 // colors definitions
-RgbColor red(255 * BRIGHTNESS, 0, 0);
-RgbColor green(0, 255 * BRIGHTNESS, 0);
-RgbColor blue(0, 0, 255 * BRIGHTNESS);
-RgbColor cyan(0, 128 * BRIGHTNESS, 128 * BRIGHTNESS);
-RgbColor magenta(128 * BRIGHTNESS, 0, 128 * BRIGHTNESS);
-RgbColor yellow(128 * BRIGHTNESS, 128 * BRIGHTNESS, 0);
-RgbColor pink(120 * BRIGHTNESS, 50 * BRIGHTNESS, 85 * BRIGHTNESS);
-RgbColor purple(105 * BRIGHTNESS, 0, 150 * BRIGHTNESS);
-RgbColor black(0);
-RgbColor white(255);
+RgbColor red = RgbColor(255, 0, 0).Dim(BRIGHTNESS);
+RgbColor green = RgbColor(0, 255, 0).Dim(BRIGHTNESS);
+RgbColor blue = RgbColor(0, 0, 255).Dim(BRIGHTNESS);
+RgbColor cyan = RgbColor(0, 128, 128).Dim(BRIGHTNESS);
+RgbColor magenta = RgbColor(128, 0, 128).Dim(BRIGHTNESS);
+RgbColor yellow = RgbColor(128, 128, 0).Dim(BRIGHTNESS);
+RgbColor pink = RgbColor(120, 50, 85).Dim(BRIGHTNESS);
+RgbColor purple = RgbColor(105, 0, 150).Dim(BRIGHTNESS);
+RgbColor black = RgbColor(0);
+RgbColor white = RgbColor(BRIGHTNESS);
 
+/**
+ * @brief Return the LED strip index for a position taking into account LED_COL_SKIP and LED_OFFSET
+ *
+ */
+int positionToLED(int position)
+{
+  return (position * LED_OFFSET) + (floor(position / rowsByBoard[board]) * LED_COL_SKIP);
+}
+  
 /**
  * @brief Return the string coordinates for a position as "X12" where X is the column letter and 12 the row number
  *
- * @param position
- * @return String
  */
 String positionToCoordinates(int position)
 {
@@ -65,9 +82,27 @@ String positionToCoordinates(int position)
 }
 
 /**
+ * @brief Return the relocated position for any hold in the HOLD_RELOCATE table
+ *
+ */
+int relocateHold(int position)
+{
+  int relocPos = position;
+  for (int i = 0; i < sizeof(HOLD_RELOCATE)/sizeof(HoldReloc); i++)
+  {
+    if (HOLD_RELOCATE[i].origPos == position)
+    {
+      relocPos = HOLD_RELOCATE[i].relocPos;
+      break;
+    }
+  }
+  return relocPos;
+}
+
+/**
  * @brief Light the LEDs for a given hold
  *
- * @param holdType Hold type (S,P,E)
+ * @param holdType Hold type (F, F, L, M, P, R, S)
  * @param holdPosition Position of the mathcing LED
  */
 void lightHold(char holdType, int holdPosition)
@@ -76,6 +111,14 @@ void lightHold(char holdType, int holdPosition)
   Serial.print(holdType);
   Serial.print(", ");
   Serial.print(holdPosition);
+
+  int relocPosition = relocateHold(holdPosition);
+  if (holdPosition != relocPosition)
+  {
+    holdPosition = relocPosition;
+    Serial.print(" relocated to: ");
+    Serial.print(holdPosition);
+  }
 
   String colorLabel = "BLACK";
   RgbColor colorRgb = black;
@@ -117,7 +160,7 @@ void lightHold(char holdType, int holdPosition)
   Serial.print(positionToCoordinates(holdPosition));
 
   // Ligth Hold
-  strip.SetPixelColor(holdPosition * LED_OFFSET, colorRgb);
+  strip.SetPixelColor(positionToLED(holdPosition), colorRgb);
 
   // Find the LED position above the hold
   if (ledAboveHoldEnabled)
@@ -144,7 +187,7 @@ void lightHold(char holdType, int holdPosition)
       Serial.print(ledAboveHoldPosition);
 
       // Light LED above hold
-      strip.SetPixelColor(ledAboveHoldPosition * LED_OFFSET, yellow);
+      strip.SetPixelColor(positionToLED(ledAboveHoldPosition), yellow);
     }
   }
 
@@ -171,16 +214,17 @@ void checkLeds()
   if (CHECK_LEDS_AT_BOOT)
   {
     RgbColor colors[] = {red, green, blue};
-    int fadeDelay = 25;
-
+    int blinkDelay = 1000;
+    
     // blink each color
     for (int indexColor = 0; indexColor < sizeof(colors)/sizeof(RgbColor); indexColor++)
     {
-      delay(fadeDelay * 50);
+      if (indexColor != 0)
+        delay(blinkDelay);
       for (int indexLed = 0; indexLed < leds; indexLed++)
-        strip.SetPixelColor(indexLed * LED_OFFSET, colors[indexColor]);
+        strip.SetPixelColor(positionToLED(indexLed), colors[indexColor]);
       strip.Show();
-      delay(fadeDelay * 50);
+      delay(blinkDelay);
       resetLeds();
     }
   }
